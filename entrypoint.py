@@ -16,8 +16,9 @@ from PIL.Image import Image
 DEFAULT_HEIGHT = os.getenv('DEFAULT_HEIGHT', 512)
 DEFAULT_WIDTH = os.getenv('DEFAULT_WIDTH', 512)
 DEFAULT_SEED = os.getenv('DEFAULT_SEED', None)
-MAX_IMAGE_COUNT = os.getenv('MAX_IMAGE_COUNT', 5)
-TOKEN = os.getenv('HUGGINGFACE_TOKEN')
+MAX_IMAGE_COUNT = int(os.getenv('MAX_IMAGE_COUNT', 5))
+HUGGINGFACE_TOKEN = os.getenv('HUGGINGFACE_TOKEN')
+DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 ALLOW_NSFW_USER_OVERRIDE = os.getenv("ALLOW_NSFW_USER_OVERRIDE", 'False').lower() in ('true', '1', 't')
 GLOBAL_NSFW_ENABLE = os.getenv("GLOBAL_NSFW_ENABLE", 'False').lower() in ('true', '1', 't')
 FILE_FORMAT = os.getenv("FILE_FORMAT", "jpeg").lower()
@@ -34,18 +35,19 @@ NSFW_WARNING = """Here's some things you can try:
 # Synchronization
 mutex = asyncio.Lock()
 
-assert len(TOKEN) > 0, "env HUGGINGFACE_TOKEN not set"
+assert len(HUGGINGFACE_TOKEN) > 0, "env HUGGINGFACE_TOKEN not set"
+assert len(DISCORD_TOKEN) > 0, "env DISCORD_TOKEN not set"
 assert FILE_FORMAT in ('jpeg', 'png'), "env FILE_FORMAT must be 'jpeg' or 'png'"
 assert REVISION in ('main', 'fp16'), "env REVISION must be 'main' or 'fp16'"
 
 diffuser = StableDiffusion(
-    token=TOKEN,
+    token=HUGGINGFACE_TOKEN,
     revision=REVISION,
     attention_slicing=ATTENTION_SLICING,
     default_seed=DEFAULT_SEED,
 )
 queue = workerqueue.DiffusionWorkerQueue(diffuser)
-bot = interactions.Client(token=os.environ['DISCORD_TOKEN'])
+bot = interactions.Client(token=DISCORD_TOKEN)
 
 # Default /text2img command options
 default_options = [
@@ -109,7 +111,7 @@ async def text2img(ctx: interactions.CommandContext, text: str, count: int=1, wi
         async with mutex:
             e.fields[0].value = progress.description()
             if ctx.message == None:
-                await ctx.send(embeds=e, ephemeral=True)
+                await ctx.send(embeds=e)
             else:
                 await ctx.edit(embeds=e)
 
@@ -117,19 +119,13 @@ async def text2img(ctx: interactions.CommandContext, text: str, count: int=1, wi
     try:
         files = await queue.run(text, progress_callback=cb, sfw=not nsfw, samples=count, width=width, height=height)
     except:
-        await ctx.edit("An error occurred. Try again later", embeds=None)
+        await ctx.send("An error occurred. Try again later", embeds=None, ephemeral=True)
         raise
-    await ctx.edit(embeds=None)
+    msg = await ctx.edit('Done', embeds=None)
 
     if len(files) == 0:
-        await ctx.edit("NSFW image detected. "+NSFW_WARNING, embeds=None)
+        await ctx.send("NSFW image detected. "+NSFW_WARNING, embeds=None, ephemeral=True)
         return
-
-    if len(files) < count:
-        await ctx.edit("Some NSFW images have been excluded. "+NSFW_WARNING, embeds=None)
-
-    # Upload the files. Since interactions.py doesn't support direct upload with ctx.send, use msg.edit instead.
-    msg = await ctx.send(text)
 
     imgs = []
     for f in files:
@@ -142,6 +138,9 @@ async def text2img(ctx: interactions.CommandContext, text: str, count: int=1, wi
         img_buffer.seek(0)
         imgs.append(interactions.api.models.misc.File(filename, img_buffer))
 
-    await msg.edit(files=imgs)
+    await msg.edit(text, files=imgs, embeds=None)
+
+    if len(files) < count:
+        await ctx.send("Some NSFW images have been excluded. "+NSFW_WARNING, embeds=None, ephemeral=True)
 
 bot.start()
